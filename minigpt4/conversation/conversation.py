@@ -192,7 +192,7 @@ class Chat:
     def get_context_emb(self, conv, img_list):
         prompt = conv.get_prompt()
         prompt_segs = prompt.split('<ImageHere>')
-        assert len(prompt_segs) == len(img_list) + 1, "Unmatched numbers of image placeholders and images."
+        assert len(prompt_segs) == len(img_list) + 1, f"Unmatched numbers of image placeholders and images: {len(prompt_segs)}, {len(img_list)}"
         seg_tokens = [
             self.model.llama_tokenizer(
                 seg, return_tensors="pt", add_special_tokens=i == 0).to(self.device).input_ids

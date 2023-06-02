@@ -84,7 +84,8 @@ class MiniGPT4(Blip2Base):
 
         print('Loading LLAMA')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model, use_fast=False)
-        self.llama_tokenizer.pad_token = self.llama_tokenizer.eos_token
+        # self.llama_tokenizer.pad_token = self.llama_tokenizer.eos_token
+        self.llama_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
         if self.low_resource:
             self.llama_model = LlamaForCausalLM.from_pretrained(
@@ -101,6 +102,17 @@ class MiniGPT4(Blip2Base):
 
         for name, param in self.llama_model.named_parameters():
             param.requires_grad = False
+
+        from peft import LoraConfig, get_peft_model
+        lora_cfg = LoraConfig(
+            r=8,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            bias='none',
+            task_type='CAUSAL_LM'
+        )
+        self.llama_model = get_peft_model(self.llama_model, lora_cfg)
+
         print('Loading LLAMA Done')
 
         self.llama_proj = nn.Linear(
@@ -111,11 +123,11 @@ class MiniGPT4(Blip2Base):
 
         if prompt_path:
             with open(prompt_path, 'r') as f:
-                raw_prompts = f.read().splitlines()
-            filted_prompts = [raw_prompt for raw_prompt in raw_prompts if "<ImageHere>" in raw_prompt]
+                raw_prompts = f.read()
+            filted_prompts = [raw_prompts]
             self.prompt_list = [prompt_template.format(p) for p in filted_prompts]
             print('Load {} training prompts'.format(len(self.prompt_list)))
-            print('Prompt Example \n{}'.format(random.choice(self.prompt_list)))
+            print('Prompt Example \n{}'.format(self.prompt_list[0]))
         else:
             self.prompt_list = []
 
@@ -155,8 +167,8 @@ class MiniGPT4(Blip2Base):
                 p_before, return_tensors="pt", add_special_tokens=False).to(img_embeds.device)
             p_after_tokens = self.llama_tokenizer(
                 p_after, return_tensors="pt", add_special_tokens=False).to(img_embeds.device)
-            p_before_embeds = self.llama_model.model.embed_tokens(p_before_tokens.input_ids).expand(batch_size, -1, -1)
-            p_after_embeds = self.llama_model.model.embed_tokens(p_after_tokens.input_ids).expand(batch_size, -1, -1)
+            p_before_embeds = self.llama_model.base_model.model.model.embed_tokens(p_before_tokens.input_ids).expand(batch_size, -1, -1)
+            p_after_embeds = self.llama_model.base_model.model.model.embed_tokens(p_after_tokens.input_ids).expand(batch_size, -1, -1)
             wrapped_img_embeds = torch.cat([p_before_embeds, img_embeds, p_after_embeds], dim=1)
             wrapped_atts_img = atts_img[:, :1].expand(-1, wrapped_img_embeds.shape[1])
             return wrapped_img_embeds, wrapped_atts_img
@@ -166,12 +178,13 @@ class MiniGPT4(Blip2Base):
     def forward(self, samples):
         image = samples["image"]
         img_embeds, atts_img = self.encode_img(image)
+        atts_img = atts_img.to(image.device)
         if hasattr(samples, 'question_split'):  # VQA dataset
             print('VQA Batch')
             vqa_prompt = '###Human: <Img><ImageHere></Img> '
             img_embeds, atts_img = self.prompt_wrap(img_embeds, atts_img, vqa_prompt)
         elif self.prompt_list:
-            prompt = random.choice(self.prompt_list)
+            prompt = self.prompt_list[0]
             img_embeds, atts_img = self.prompt_wrap(img_embeds, atts_img, prompt)
 
         self.llama_tokenizer.padding_side = "right"
@@ -201,10 +214,10 @@ class MiniGPT4(Blip2Base):
         bos = torch.ones([batch_size, 1],
                          dtype=to_regress_tokens.input_ids.dtype,
                          device=to_regress_tokens.input_ids.device) * self.llama_tokenizer.bos_token_id
-        bos_embeds = self.llama_model.model.embed_tokens(bos)
+        bos_embeds = self.llama_model.base_model.model.model.embed_tokens(bos)
         atts_bos = atts_img[:, :1]
 
-        to_regress_embeds = self.llama_model.model.embed_tokens(to_regress_tokens.input_ids)
+        to_regress_embeds = self.llama_model.base_model.model.model.embed_tokens(to_regress_tokens.input_ids)
         inputs_embeds = torch.cat([bos_embeds, img_embeds, to_regress_embeds], dim=1)
         attention_mask = torch.cat([atts_bos, atts_img, to_regress_tokens.attention_mask], dim=1)
 
